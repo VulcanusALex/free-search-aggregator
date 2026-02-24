@@ -1,0 +1,45 @@
+providers:
+  brave:
+    api_key: ${BRAVE_API_KEY}
+    daily_quota: 2000
+    enabled: true
+    min_interval_seconds: 1.0
+    timeout_seconds: 12
+  duckduckgo:
+    daily_quota: 500
+    enabled: true
+    min_interval_seconds: 1.0
+    timeout_seconds: 12
+  duckduckgo_instant:
+    daily_quota: 1000
+    enabled: false
+    min_interval_seconds: 0.5
+    timeout_seconds: 12
+  searchapi:
+    api_key: ${SEARCHAPI_API_KEY}
+    daily_quota: 100
+    enabled: true
+    engine: google
+    min_interval_seconds: 1.0
+    timeout_seconds: 12
+  serper:
+    api_key: ${SERPER_API_KEY}
+    daily_quota: 2500
+    enabled: true
+    min_interval_seconds: 1.0
+    timeout_seconds: 12
+  tavily:
+    api_key: ${TAVILY_API_KEY}
+    daily_quota: 1000
+    enabled: true
+    min_interval_seconds: 1.0
+    search_depth: basic
+    timeout_seconds: 12
+router:
+  provider_order:
+  - brave
+  - tavily
+  - duckduckgo
+  - serper
+  - searchapi
+  quota_state_file: .quota_state.json
