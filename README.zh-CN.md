@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/hero.jpg" alt="Free Search Aggregator" width="100%" />
+  <img src="assets/hero.jpg?v=6d74a19" alt="Free Search Aggregator" width="100%" />
 </p>
 
 <h1 align="center">Free Search Aggregator</h1>
