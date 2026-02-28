@@ -14,6 +14,12 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 12
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/122.0 Safari/537.36"
+)
+MAX_RESPONSE_BYTES = 5 * 1024 * 1024  # 5 MB guard against runaway responses
 
 
 class ProviderError(Exception):
@@ -107,6 +113,23 @@ class BaseProvider:
             return text[:180]
         return ""
 
+    @staticmethod
+    def _guard_response_size(response: requests.Response) -> None:
+        """Raise ParseError if the response body exceeds MAX_RESPONSE_BYTES."""
+        cl = response.headers.get("content-length")
+        if cl:
+            try:
+                if int(cl) > MAX_RESPONSE_BYTES:
+                    raise ParseError(
+                        f"Response content-length {cl} bytes exceeds {MAX_RESPONSE_BYTES} limit"
+                    )
+            except ValueError:
+                pass
+        if len(response.content) > MAX_RESPONSE_BYTES:
+            raise ParseError(
+                f"Response body {len(response.content)} bytes exceeds {MAX_RESPONSE_BYTES} limit"
+            )
+
     def search(self, query: str, *, max_results: int) -> list[SearchItem]:
         raise NotImplementedError
 
@@ -178,23 +201,22 @@ class BraveProvider(BaseProvider):
 
         if response.status_code in (401, 403):
             detail = self._http_error_detail(response)
-            if detail:
-                raise AuthError(
-                    f"Brave auth failed: HTTP {response.status_code} ({detail})"
-                )
-            raise AuthError(f"Brave auth failed: HTTP {response.status_code}")
+            raise AuthError(
+                f"Brave auth failed: HTTP {response.status_code}"
+                + (f" ({detail})" if detail else "")
+            )
         if response.status_code == 429:
             raise RateLimitError("Brave rate limited")
         if response.status_code >= 500:
             raise UpstreamError(f"Brave server error: HTTP {response.status_code}")
         if response.status_code >= 400:
             detail = self._http_error_detail(response)
-            if detail:
-                raise UpstreamError(
-                    f"Brave request rejected: HTTP {response.status_code} ({detail})"
-                )
-            raise UpstreamError(f"Brave request rejected: HTTP {response.status_code}")
+            raise UpstreamError(
+                f"Brave request rejected: HTTP {response.status_code}"
+                + (f" ({detail})" if detail else "")
+            )
 
+        self._guard_response_size(response)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -210,13 +232,7 @@ class BraveProvider(BaseProvider):
             if not (title and url):
                 continue
             items.append(
-                SearchItem(
-                    title=title,
-                    url=url,
-                    snippet=snippet,
-                    source=self.name,
-                    rank=idx,
-                )
+                SearchItem(title=title, url=url, snippet=snippet, source=self.name, rank=idx)
             )
         logger.info("Brave returned %s results for query=%r", len(items), query)
         return items
@@ -242,11 +258,7 @@ class TavilyProvider(BaseProvider):
 
         try:
             logger.debug("Tavily request: query=%r max_results=%s", query, max_results)
-            response = self.session.post(
-                self.endpoint,
-                json=body,
-                timeout=self.timeout,
-            )
+            response = self.session.post(self.endpoint, json=body, timeout=self.timeout)
         except requests.RequestException as exc:
             raise NetworkError(f"Tavily request failed: {exc}") from exc
         finally:
@@ -254,23 +266,22 @@ class TavilyProvider(BaseProvider):
 
         if response.status_code in (401, 403):
             detail = self._http_error_detail(response)
-            if detail:
-                raise AuthError(
-                    f"Tavily auth failed: HTTP {response.status_code} ({detail})"
-                )
-            raise AuthError(f"Tavily auth failed: HTTP {response.status_code}")
+            raise AuthError(
+                f"Tavily auth failed: HTTP {response.status_code}"
+                + (f" ({detail})" if detail else "")
+            )
         if response.status_code == 429:
             raise RateLimitError("Tavily rate limited")
         if response.status_code >= 500:
             raise UpstreamError(f"Tavily server error: HTTP {response.status_code}")
         if response.status_code >= 400:
             detail = self._http_error_detail(response)
-            if detail:
-                raise UpstreamError(
-                    f"Tavily request rejected: HTTP {response.status_code} ({detail})"
-                )
-            raise UpstreamError(f"Tavily request rejected: HTTP {response.status_code}")
+            raise UpstreamError(
+                f"Tavily request rejected: HTTP {response.status_code}"
+                + (f" ({detail})" if detail else "")
+            )
 
+        self._guard_response_size(response)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -285,13 +296,7 @@ class TavilyProvider(BaseProvider):
             if not (title and url):
                 continue
             items.append(
-                SearchItem(
-                    title=title,
-                    url=url,
-                    snippet=snippet,
-                    source=self.name,
-                    rank=idx,
-                )
+                SearchItem(title=title, url=url, snippet=snippet, source=self.name, rank=idx)
             )
         logger.info("Tavily returned %s results for query=%r", len(items), query)
         return items
@@ -319,21 +324,12 @@ class DuckDuckGoProvider(BaseProvider):
     def search(self, query: str, *, max_results: int) -> list[SearchItem]:
         self.maybe_sleep_for_rate_limit()
         params = {"q": query}
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0 Safari/537.36"
-            )
-        }
+        headers = {"User-Agent": DEFAULT_USER_AGENT}
 
         try:
             logger.debug("DuckDuckGo HTML request: query=%r max_results=%s", query, max_results)
             response = self.session.get(
-                self.endpoint,
-                params=params,
-                headers=headers,
-                timeout=self.timeout,
+                self.endpoint, params=params, headers=headers, timeout=self.timeout
             )
         except requests.RequestException as exc:
             raise NetworkError(f"DuckDuckGo request failed: {exc}") from exc
@@ -346,12 +342,12 @@ class DuckDuckGoProvider(BaseProvider):
             raise UpstreamError(f"DuckDuckGo server error: HTTP {response.status_code}")
         if response.status_code >= 400:
             detail = self._http_error_detail(response)
-            if detail:
-                raise UpstreamError(
-                    f"DuckDuckGo request rejected: HTTP {response.status_code} ({detail})"
-                )
-            raise UpstreamError(f"DuckDuckGo request rejected: HTTP {response.status_code}")
+            raise UpstreamError(
+                f"DuckDuckGo request rejected: HTTP {response.status_code}"
+                + (f" ({detail})" if detail else "")
+            )
 
+        self._guard_response_size(response)
         soup = BeautifulSoup(response.text, "html.parser")
         node_selectors = (
             "div.result",
@@ -388,20 +384,16 @@ class DuckDuckGoProvider(BaseProvider):
             seen_urls.add(href)
             rank += 1
             items.append(
-                SearchItem(
-                    title=title,
-                    url=href,
-                    snippet=snippet,
-                    source=self.name,
-                    rank=rank,
-                )
+                SearchItem(title=title, url=href, snippet=snippet, source=self.name, rank=rank)
             )
             if rank >= max_results:
                 break
 
+        # Return empty list (not an error) — router will continue to next provider
         if not items:
-            raise ParseError("DuckDuckGo parsing yielded no valid results")
-        logger.info("DuckDuckGo HTML returned %s results for query=%r", len(items), query)
+            logger.info("DuckDuckGo HTML returned no results for query=%r", query)
+        else:
+            logger.info("DuckDuckGo HTML returned %s results for query=%r", len(items), query)
         return items
 
 
@@ -421,10 +413,7 @@ class SerperProvider(BaseProvider):
         try:
             logger.debug("Serper request: query=%r max_results=%s", query, max_results)
             response = self.session.post(
-                self.endpoint,
-                headers=headers,
-                json=body,
-                timeout=self.timeout,
+                self.endpoint, headers=headers, json=body, timeout=self.timeout
             )
         except requests.RequestException as exc:
             raise NetworkError(f"Serper request failed: {exc}") from exc
@@ -433,23 +422,22 @@ class SerperProvider(BaseProvider):
 
         if response.status_code in (401, 403):
             detail = self._http_error_detail(response)
-            if detail:
-                raise AuthError(
-                    f"Serper auth failed: HTTP {response.status_code} ({detail})"
-                )
-            raise AuthError(f"Serper auth failed: HTTP {response.status_code}")
+            raise AuthError(
+                f"Serper auth failed: HTTP {response.status_code}"
+                + (f" ({detail})" if detail else "")
+            )
         if response.status_code == 429:
             raise RateLimitError("Serper rate limited")
         if response.status_code >= 500:
             raise UpstreamError(f"Serper server error: HTTP {response.status_code}")
         if response.status_code >= 400:
             detail = self._http_error_detail(response)
-            if detail:
-                raise UpstreamError(
-                    f"Serper request rejected: HTTP {response.status_code} ({detail})"
-                )
-            raise UpstreamError(f"Serper request rejected: HTTP {response.status_code}")
+            raise UpstreamError(
+                f"Serper request rejected: HTTP {response.status_code}"
+                + (f" ({detail})" if detail else "")
+            )
 
+        self._guard_response_size(response)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -464,13 +452,7 @@ class SerperProvider(BaseProvider):
             if not (title and url):
                 continue
             items.append(
-                SearchItem(
-                    title=title,
-                    url=url,
-                    snippet=snippet,
-                    source=self.name,
-                    rank=idx,
-                )
+                SearchItem(title=title, url=url, snippet=snippet, source=self.name, rank=idx)
             )
         logger.info("Serper returned %s results for query=%r", len(items), query)
         return items
@@ -490,17 +472,14 @@ class SearchApiProvider(BaseProvider):
             "engine": self.config.get("engine", "google"),
             "q": query,
             "num": max_results,
-            "api_key": api_key,
         }
+        # Use Bearer token header only — avoids leaking key in query string / server logs
         headers = {"Authorization": f"Bearer {api_key}"}
 
         try:
             logger.debug("SearchApi request: query=%r max_results=%s", query, max_results)
             response = self.session.get(
-                self.endpoint,
-                params=params,
-                headers=headers,
-                timeout=self.timeout,
+                self.endpoint, params=params, headers=headers, timeout=self.timeout
             )
         except requests.RequestException as exc:
             raise NetworkError(f"SearchApi request failed: {exc}") from exc
@@ -509,23 +488,22 @@ class SearchApiProvider(BaseProvider):
 
         if response.status_code in (401, 403):
             detail = self._http_error_detail(response)
-            if detail:
-                raise AuthError(
-                    f"SearchApi auth failed: HTTP {response.status_code} ({detail})"
-                )
-            raise AuthError(f"SearchApi auth failed: HTTP {response.status_code}")
+            raise AuthError(
+                f"SearchApi auth failed: HTTP {response.status_code}"
+                + (f" ({detail})" if detail else "")
+            )
         if response.status_code == 429:
             raise RateLimitError("SearchApi rate limited")
         if response.status_code >= 500:
             raise UpstreamError(f"SearchApi server error: HTTP {response.status_code}")
         if response.status_code >= 400:
             detail = self._http_error_detail(response)
-            if detail:
-                raise UpstreamError(
-                    f"SearchApi request rejected: HTTP {response.status_code} ({detail})"
-                )
-            raise UpstreamError(f"SearchApi request rejected: HTTP {response.status_code}")
+            raise UpstreamError(
+                f"SearchApi request rejected: HTTP {response.status_code}"
+                + (f" ({detail})" if detail else "")
+            )
 
+        self._guard_response_size(response)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -540,13 +518,7 @@ class SearchApiProvider(BaseProvider):
             if not (title and url):
                 continue
             items.append(
-                SearchItem(
-                    title=title,
-                    url=url,
-                    snippet=snippet,
-                    source=self.name,
-                    rank=idx,
-                )
+                SearchItem(title=title, url=url, snippet=snippet, source=self.name, rank=idx)
             )
         logger.info("SearchApi returned %s results for query=%r", len(items), query)
         return items
@@ -558,29 +530,15 @@ class DuckDuckGoInstantProvider(BaseProvider):
 
     def search(self, query: str, *, max_results: int) -> list[SearchItem]:
         self.maybe_sleep_for_rate_limit()
-        params = {
-            "q": query,
-            "format": "json",
-            "no_redirect": 1,
-            "no_html": 1,
-        }
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0 Safari/537.36"
-            )
-        }
+        params = {"q": query, "format": "json", "no_redirect": 1, "no_html": 1}
+        headers = {"User-Agent": DEFAULT_USER_AGENT}
 
         try:
             logger.debug(
                 "DuckDuckGo Instant request: query=%r max_results=%s", query, max_results
             )
             response = self.session.get(
-                self.endpoint,
-                params=params,
-                headers=headers,
-                timeout=self.timeout,
+                self.endpoint, params=params, headers=headers, timeout=self.timeout
             )
         except requests.RequestException as exc:
             raise NetworkError(f"DuckDuckGo Instant request failed: {exc}") from exc
@@ -590,20 +548,15 @@ class DuckDuckGoInstantProvider(BaseProvider):
         if response.status_code == 429:
             raise RateLimitError("DuckDuckGo Instant rate limited")
         if response.status_code >= 500:
-            raise UpstreamError(
-                f"DuckDuckGo Instant server error: HTTP {response.status_code}"
-            )
+            raise UpstreamError(f"DuckDuckGo Instant server error: HTTP {response.status_code}")
         if response.status_code >= 400:
             detail = self._http_error_detail(response)
-            if detail:
-                raise UpstreamError(
-                    "DuckDuckGo Instant request rejected: "
-                    f"HTTP {response.status_code} ({detail})"
-                )
             raise UpstreamError(
                 f"DuckDuckGo Instant request rejected: HTTP {response.status_code}"
+                + (f" ({detail})" if detail else "")
             )
 
+        self._guard_response_size(response)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -637,11 +590,7 @@ class DuckDuckGoInstantProvider(BaseProvider):
             title = text.split(" - ", 1)[0].strip() or text[:80]
             items.append(
                 SearchItem(
-                    title=title,
-                    url=url,
-                    snippet=text,
-                    source=self.name,
-                    rank=len(items) + 1,
+                    title=title, url=url, snippet=text, source=self.name, rank=len(items) + 1
                 )
             )
             if len(items) >= max_results:
@@ -682,6 +631,7 @@ class YaCyProvider(BaseProvider):
         if response.status_code >= 400:
             raise UpstreamError(f"YaCy request rejected: HTTP {response.status_code}")
 
+        self._guard_response_size(response)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -704,13 +654,7 @@ class YaCyProvider(BaseProvider):
             if not (title and url):
                 continue
             items.append(
-                SearchItem(
-                    title=title,
-                    url=url,
-                    snippet=snippet,
-                    source=self.name,
-                    rank=idx,
-                )
+                SearchItem(title=title, url=url, snippet=snippet, source=self.name, rank=idx)
             )
         return items
 

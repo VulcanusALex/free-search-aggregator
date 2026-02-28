@@ -29,6 +29,9 @@ from .providers import (
 logger = logging.getLogger(__name__)
 _UNRESOLVED_ENV_PATTERN = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
 
+# Warn when a provider has consumed this fraction of its daily quota
+QUOTA_WARN_THRESHOLD = 0.80
+
 
 class SearchRouterError(Exception):
     """Raised when all providers are exhausted."""
@@ -51,7 +54,6 @@ class QuotaState:
         except (OSError, json.JSONDecodeError):
             logger.warning("Unable to read quota state at %s; resetting", self.path)
             return
-
         if data.get("date") != self.today:
             return
         self.state = data
@@ -119,7 +121,6 @@ class SearchRouter:
         order = config.get("router", {}).get("provider_order")
         if order:
             return [str(p).strip().lower() for p in order if str(p).strip()]
-        # hard default matching requested priority
         return ["brave", "tavily", "duckduckgo", "serper"]
 
     def _build_providers(self) -> dict[str, Any]:
@@ -131,16 +132,114 @@ class SearchRouter:
             if not cls:
                 logger.warning("Unknown provider in order list: %s", name)
                 continue
-            provider = cls(config=pconf)
-            providers[name] = provider
+            providers[name] = cls(config=pconf)
         return providers
 
     def _has_quota(self, name: str, provider_cfg: dict[str, Any]) -> bool:
         daily_quota = provider_cfg.get("daily_quota")
         if daily_quota is None:
             return True
+        daily_quota = int(daily_quota)
         used = self.quota.get_count(name)
-        return used < int(daily_quota)
+        if daily_quota > 0 and used >= daily_quota * QUOTA_WARN_THRESHOLD:
+            pct = round(used / daily_quota * 100, 1)
+            logger.warning(
+                "Provider %s quota at %.1f%% (%d/%d) — nearing daily limit",
+                name, pct, used, daily_quota,
+            )
+        return used < daily_quota
+
+    def _try_provider(
+        self,
+        name: str,
+        provider: Any,
+        query: str,
+        max_results: int,
+    ) -> tuple[list[SearchItem] | None, dict[str, Any], bool]:
+        """Attempt one provider search.
+
+        Returns:
+            (items, attempt_record, count_quota)
+            - items=None means a hard failure (skip to next provider)
+            - items=[]   means no results (skip to next provider, quota consumed)
+            - items=[..] means success
+            - count_quota: True if the HTTP request reached the provider
+        """
+        started = time.perf_counter()
+
+        try:
+            items: list[SearchItem] = provider.search(query, max_results=max_results)
+        except (AuthError, NetworkError) as exc:
+            # AuthError  → API rejected the key; provider quota was NOT consumed
+            # NetworkError → request never reached the provider
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            logger.warning("Provider %s failed (%s): %s", name, type(exc).__name__, exc)
+            return (
+                None,
+                {
+                    "provider": name,
+                    "status": "failed",
+                    "reason": type(exc).__name__,
+                    "detail": str(exc),
+                    "latency_ms": elapsed_ms,
+                },
+                False,  # do NOT count quota
+            )
+        except ProviderError as exc:
+            # RateLimitError / UpstreamError / ParseError / QuotaExceededError
+            # Request reached the provider → count quota
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            logger.warning("Provider %s failed (%s): %s", name, type(exc).__name__, exc)
+            return (
+                None,
+                {
+                    "provider": name,
+                    "status": "failed",
+                    "reason": type(exc).__name__,
+                    "detail": str(exc),
+                    "latency_ms": elapsed_ms,
+                },
+                True,  # count quota — request was made
+            )
+        except Exception as exc:  # pragma: no cover — defensive failover guard
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            logger.exception("Provider %s crashed unexpectedly", name)
+            return (
+                None,
+                {
+                    "provider": name,
+                    "status": "failed",
+                    "reason": "unexpected_error",
+                    "detail": str(exc),
+                    "latency_ms": elapsed_ms,
+                },
+                False,
+            )
+
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        if not items:
+            return (
+                [],
+                {
+                    "provider": name,
+                    "status": "failed",
+                    "reason": "empty_results",
+                    "detail": "provider returned zero results",
+                    "latency_ms": elapsed_ms,
+                },
+                True,  # request was made
+            )
+
+        return (
+            items,
+            {
+                "provider": name,
+                "status": "ok",
+                "result_count": len(items),
+                "latency_ms": elapsed_ms,
+            },
+            True,
+        )
 
     def search(self, query: str, *, max_results: int = 8) -> dict[str, Any]:
         if max_results <= 0:
@@ -151,7 +250,7 @@ class SearchRouter:
         for name in self.order:
             provider = self.providers.get(name)
             cfg = providers_cfg.get(name, {})
-            logger.info("Attempting provider=%s for query=%r", name, query)
+
             if not provider:
                 attempted.append({"provider": name, "status": "skipped", "reason": "not_configured"})
                 continue
@@ -162,77 +261,17 @@ class SearchRouter:
                 attempted.append({"provider": name, "status": "failed", "reason": "quota_exceeded"})
                 continue
 
-            started = time.perf_counter()
-            try:
-                items: list[SearchItem] = provider.search(query, max_results=max_results)
-            except (AuthError, QuotaExceededError, RateLimitError, NetworkError, ParseError, UpstreamError) as exc:
-                elapsed_ms = int((time.perf_counter() - started) * 1000)
-                logger.warning("Provider %s failed (%s): %s", name, type(exc).__name__, exc)
-                attempted.append(
-                    {
-                        "provider": name,
-                        "status": "failed",
-                        "reason": type(exc).__name__,
-                        "detail": str(exc),
-                        "latency_ms": elapsed_ms,
-                    }
-                )
-                self.quota.increment(name)
-                self.quota.save()
-                continue
-            except ProviderError as exc:
-                elapsed_ms = int((time.perf_counter() - started) * 1000)
-                logger.warning("Provider %s failed (%s): %s", name, type(exc).__name__, exc)
-                attempted.append(
-                    {
-                        "provider": name,
-                        "status": "failed",
-                        "reason": type(exc).__name__,
-                        "detail": str(exc),
-                        "latency_ms": elapsed_ms,
-                    }
-                )
-                self.quota.increment(name)
-                self.quota.save()
-                continue
-            except Exception as exc:  # pragma: no cover - defensive failover guard
-                elapsed_ms = int((time.perf_counter() - started) * 1000)
-                logger.exception("Provider %s crashed unexpectedly", name)
-                attempted.append(
-                    {
-                        "provider": name,
-                        "status": "failed",
-                        "reason": "unexpected_error",
-                        "detail": str(exc),
-                        "latency_ms": elapsed_ms,
-                    }
-                )
-                self.quota.increment(name)
-                self.quota.save()
-                continue
+            logger.info("Attempting provider=%s for query=%r", name, query)
+            items, attempt, count_quota = self._try_provider(name, provider, query, max_results)
 
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            self.quota.increment(name)
-            self.quota.save()
-            if not items:
-                attempted.append(
-                    {
-                        "provider": name,
-                        "status": "failed",
-                        "reason": "empty_results",
-                        "detail": "provider returned zero results",
-                        "latency_ms": elapsed_ms,
-                    }
-                )
+            if count_quota:
+                self.quota.increment(name)
+                self.quota.save()
+
+            attempted.append(attempt)
+
+            if not items:  # None (error) or [] (empty results) → try next
                 continue
-            attempted.append(
-                {
-                    "provider": name,
-                    "status": "ok",
-                    "result_count": len(items),
-                    "latency_ms": elapsed_ms,
-                }
-            )
 
             return {
                 "query": query,
@@ -248,7 +287,7 @@ class SearchRouter:
         logger.error("All providers exhausted for query=%r", query)
         raise SearchRouterError(
             "All providers failed. "
-            + " | ".join(f"{x['provider']}:{x.get('reason','unknown')}" for x in attempted)
+            + " | ".join(f"{x['provider']}:{x.get('reason', 'unknown')}" for x in attempted)
         )
 
     def _quota_snapshot(self) -> dict[str, Any]:

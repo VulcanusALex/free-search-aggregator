@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from .router import SearchRouter, SearchRouterError
+from .task_search import task_search
+from .quota_real import get_real_quota
 
 
 def configure_logging(level: str = "INFO") -> None:
@@ -61,6 +63,8 @@ def reset_quota(*, config_path: str | None = None, provider: str | None = None) 
 
 __all__ = [
     "search",
+    "task_search",
+    "get_real_quota",
     "get_quota_status",
     "reset_quota",
     "configure_logging",
