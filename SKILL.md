@@ -69,6 +69,25 @@ scripts/remaining --real
 python3 -m free_search gc --cache-days 14
 ```
 
+## Post-install self-check (recommended)
+
+```bash
+# 1) Confirm config + provider enablement
+scripts/status --compact
+
+# 2) Run a safe smoke search (DuckDuckGo-only baseline)
+scripts/search "openclaw" --max-results 3 --compact
+
+# 3) Verify managed storage paths are being written
+#    (cache/index/report under workspace/memory)
+ls -la /home/openclaw/.openclaw/workspace/memory/search-cache/ | tail -n 5
+ls -la /home/openclaw/.openclaw/workspace/memory/search-index/
+ls -la /home/openclaw/.openclaw/workspace/memory/search-reports/ | tail -n 5
+
+# 4) Optional: test real quota endpoint behavior
+scripts/remaining --real --compact
+```
+
 ## Output contract (stable)
 
 - Search:
