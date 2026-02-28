@@ -16,11 +16,26 @@ def _workspace_root() -> Path:
 
 
 def _memory_root() -> Path:
+    default_root = (_workspace_root().parent / "memory").resolve()
     custom = os.getenv("FREE_SEARCH_MEMORY_DIR", "").strip()
-    if custom:
-        return Path(custom).expanduser().resolve()
-    # default: workspace/memory
-    return _workspace_root().parent / "memory"
+    if not custom:
+        return default_root
+
+    candidate = Path(custom).expanduser().resolve()
+    allow_any = os.getenv("FREE_SEARCH_ALLOW_ANY_MEMORY_DIR", "").strip() == "1"
+
+    # Safety guard: by default only allow paths under workspace/memory.
+    # To override intentionally, set FREE_SEARCH_ALLOW_ANY_MEMORY_DIR=1.
+    if not allow_any:
+        try:
+            candidate.relative_to(default_root)
+        except ValueError as exc:
+            raise ValueError(
+                "Unsafe FREE_SEARCH_MEMORY_DIR. Must be under workspace memory/ "
+                "or set FREE_SEARCH_ALLOW_ANY_MEMORY_DIR=1 to override."
+            ) from exc
+
+    return candidate
 
 
 def _paths() -> dict[str, Path]:
