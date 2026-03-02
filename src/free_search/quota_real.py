@@ -366,6 +366,34 @@ def get_real_quota(
             results.append(_get_serper_quota(api_key))
         elif name.startswith("duckduckgo"):
             results.append(_get_duckduckgo_quota())
+        elif name in ("bing_html", "mojeek", "searxng", "wikipedia"):
+            results.append(
+                RealQuotaResult(
+                    provider=name,
+                    supported=False,
+                    ok=False,
+                    remaining=None,
+                    limit=None,
+                    used=None,
+                    unit=None,
+                    detail="no_quota_applies",
+                    raw=None,
+                )
+            )
+        elif name in ("google_cse", "exa", "baidu", "yacy"):
+            results.append(
+                RealQuotaResult(
+                    provider=name,
+                    supported=False,
+                    ok=False,
+                    remaining=None,
+                    limit=None,
+                    used=None,
+                    unit=None,
+                    detail="no_public_quota_endpoint",
+                    raw=None,
+                )
+            )
         else:
             results.append(
                 RealQuotaResult(
