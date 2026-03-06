@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Iterable
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
+from .quality import optimize_results
 from .router import SearchRouter, SearchRouterError
 
 
@@ -249,11 +250,18 @@ def task_search(
     if raw_result_count > 0:
         dedupe_ratio = round(1 - (deduped_count / raw_result_count), 4)
 
+    # Apply quality optimization on merged results
+    core_task = task.strip()
+    for prefix in ("@dual", "@deep"):
+        if core_task.startswith(prefix):
+            core_task = core_task[len(prefix):].strip()
+    optimized = optimize_results(core_task, merged)
+
     return {
         "task": task,
         "queries": queries,
         "grouped_results": grouped_results,
-        "merged_results": merged,
+        "merged_results": optimized,
         "meta": {
             "query_count": len(queries),
             "success_queries": success_queries,
@@ -264,5 +272,9 @@ def task_search(
             "dedupe_ratio": dedupe_ratio,
             "max_workers": workers,
             "max_merged_results": max_merged_results,
+            "quality": {
+                "pre_optimization_count": deduped_count,
+                "post_optimization_count": len(optimized),
+            },
         },
     }

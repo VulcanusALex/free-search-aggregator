@@ -25,6 +25,8 @@ from .providers import (
     UpstreamError,
     PROVIDER_REGISTRY,
 )
+from .health import HealthTracker
+from .quality import optimize_results
 
 logger = logging.getLogger(__name__)
 _UNRESOLVED_ENV_PATTERN = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
@@ -95,6 +97,8 @@ class SearchRouter:
             quota_path = str((self.config_path.parent / quota_path).resolve())
         self.quota = QuotaState(Path(quota_path))
 
+        self.health = HealthTracker()
+        self.order = self.health.smart_order(self.order)
         self.providers = self._build_providers()
 
     @staticmethod
@@ -268,19 +272,34 @@ class SearchRouter:
                 self.quota.increment(name)
                 self.quota.save()
 
+            # Record health data
+            self.health.record(
+                name,
+                success=items is not None and len(items) > 0,
+                latency_ms=attempt.get("latency_ms", 0),
+                error_type=attempt.get("reason") if attempt.get("status") == "failed" else None,
+            )
+
             attempted.append(attempt)
 
             if not items:  # None (error) or [] (empty results) → try next
                 continue
 
+            result_dicts = [asdict(item) for item in items]
+            optimized = optimize_results(query, result_dicts)
+
             return {
                 "query": query,
                 "provider": name,
-                "results": [asdict(item) for item in items],
+                "results": optimized,
                 "meta": {
                     "attempted": attempted,
                     "quota": self._quota_snapshot(),
                     "timestamp_utc": datetime.now(UTC).isoformat(),
+                    "quality": {
+                        "raw_count": len(result_dicts),
+                        "optimized_count": len(optimized),
+                    },
                 },
             }
 
