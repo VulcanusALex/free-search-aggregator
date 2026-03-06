@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -80,13 +81,24 @@ class TestRouter(unittest.TestCase):
         path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
         return path
 
+    def _isolated_memory_env(self, tmp: str):
+        return patch.dict(
+            os.environ,
+            {
+                "FREE_SEARCH_MEMORY_DIR": str(Path(tmp) / "memory"),
+                "FREE_SEARCH_ALLOW_ANY_MEMORY_DIR": "1",
+            },
+            clear=False,
+        )
+
     def test_failover_when_first_provider_returns_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg_path = self._write_config(Path(tmp))
             registry = {"first": _EmptyProvider, "second": _OkProvider, "third": _DisabledProvider}
-            with patch("free_search.router.PROVIDER_REGISTRY", registry):
-                router = SearchRouter(config_path=str(cfg_path))
-                payload = router.search("milan events", max_results=5)
+            with self._isolated_memory_env(tmp):
+                with patch("free_search.router.PROVIDER_REGISTRY", registry):
+                    router = SearchRouter(config_path=str(cfg_path))
+                    payload = router.search("milan events", max_results=5)
 
         self.assertEqual(payload["provider"], "second")
         self.assertEqual(len(payload["results"]), 1)
@@ -100,19 +112,21 @@ class TestRouter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg_path = self._write_config(Path(tmp))
             registry = {"first": _EmptyProvider, "second": _EmptyProvider, "third": _DisabledProvider}
-            with patch("free_search.router.PROVIDER_REGISTRY", registry):
-                router = SearchRouter(config_path=str(cfg_path))
-                with self.assertRaises(SearchRouterError):
-                    router.search("milan events", max_results=5)
+            with self._isolated_memory_env(tmp):
+                with patch("free_search.router.PROVIDER_REGISTRY", registry):
+                    router = SearchRouter(config_path=str(cfg_path))
+                    with self.assertRaises(SearchRouterError):
+                        router.search("milan events", max_results=5)
 
     def test_max_results_validation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg_path = self._write_config(Path(tmp))
             registry = {"first": _OkProvider, "second": _OkProvider, "third": _OkProvider}
-            with patch("free_search.router.PROVIDER_REGISTRY", registry):
-                router = SearchRouter(config_path=str(cfg_path))
-                with self.assertRaises(ValueError):
-                    router.search("x", max_results=0)
+            with self._isolated_memory_env(tmp):
+                with patch("free_search.router.PROVIDER_REGISTRY", registry):
+                    router = SearchRouter(config_path=str(cfg_path))
+                    with self.assertRaises(ValueError):
+                        router.search("x", max_results=0)
 
     def test_expand_env_unresolved_placeholder(self) -> None:
         self.assertEqual(SearchRouter._expand_env("${MISSING_TOKEN}"), "")
@@ -121,9 +135,10 @@ class TestRouter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg_path = self._write_config(Path(tmp))
             registry = {"first": _CrashProvider, "second": _OkProvider, "third": _DisabledProvider}
-            with patch("free_search.router.PROVIDER_REGISTRY", registry):
-                router = SearchRouter(config_path=str(cfg_path))
-                payload = router.search("milan events", max_results=5)
+            with self._isolated_memory_env(tmp):
+                with patch("free_search.router.PROVIDER_REGISTRY", registry):
+                    router = SearchRouter(config_path=str(cfg_path))
+                    payload = router.search("milan events", max_results=5)
 
         self.assertEqual(payload["provider"], "second")
         attempts = payload["meta"]["attempted"]
@@ -134,11 +149,12 @@ class TestRouter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg_path = self._write_config(Path(tmp))
             registry = {"first": _OkProvider, "second": _OkProvider, "third": _OkProvider}
-            with patch("free_search.router.PROVIDER_REGISTRY", registry):
-                router = SearchRouter(config_path=str(cfg_path))
-                router.quota.increment("first")
-                router.quota.save()
-                status = router.quota_status()
+            with self._isolated_memory_env(tmp):
+                with patch("free_search.router.PROVIDER_REGISTRY", registry):
+                    router = SearchRouter(config_path=str(cfg_path))
+                    router.quota.increment("first")
+                    router.quota.save()
+                    status = router.quota_status()
 
         self.assertIn("date", status)
         providers = status["providers"]
@@ -152,15 +168,16 @@ class TestRouter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg_path = self._write_config(Path(tmp))
             registry = {"first": _OkProvider, "second": _OkProvider, "third": _OkProvider}
-            with patch("free_search.router.PROVIDER_REGISTRY", registry):
-                router = SearchRouter(config_path=str(cfg_path))
-                router.quota.increment("first")
-                router.quota.increment("second")
-                router.quota.save()
-                router.reset_quota()
+            with self._isolated_memory_env(tmp):
+                with patch("free_search.router.PROVIDER_REGISTRY", registry):
+                    router = SearchRouter(config_path=str(cfg_path))
+                    router.quota.increment("first")
+                    router.quota.increment("second")
+                    router.quota.save()
+                    router.reset_quota()
 
-                reloaded = SearchRouter(config_path=str(cfg_path))
-                reloaded_status = reloaded.quota_status()
+                    reloaded = SearchRouter(config_path=str(cfg_path))
+                    reloaded_status = reloaded.quota_status()
 
         self.assertEqual(reloaded_status["providers"][0]["used_today"], 0)
         self.assertEqual(reloaded_status["providers"][1]["used_today"], 0)
