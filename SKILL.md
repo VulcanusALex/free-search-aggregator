@@ -14,6 +14,10 @@ Reliable, provider-diverse web search for OpenClaw with **high uptime + low oper
 - Quota-aware: tracks daily usage, warns at 80%, skips exhausted providers
 - Task search mode for multi-angle research queries
 - Built-in storage lifecycle (cache / index / report), no workspace clutter
+- **Self-healing**: health-based smart routing automatically promotes reliable providers
+- **Quality optimization**: relevance scoring, fuzzy dedup, domain diversity, re-ranking
+- **Auto-discovery**: probes candidate search engines and SearXNG instances for new sources
+- **Self-diagnostic**: `doctor` and `setup` commands for zero-friction onboarding
 
 ---
 
@@ -75,7 +79,26 @@ First successful non-empty result returns immediately.
 - Real quota retrieval where supported (Tavily, SearchAPI, Brave via probe)
 - Auto concurrency reduction at 80% quota saturation
 
-### 4. Managed persistence
+### 4. Provider health monitoring
+- Tracks success rate, latency, and error types per provider over time
+- Computes health scores (success 50%, latency 30%, freshness 20%)
+- **Smart ordering**: auto-promotes healthy providers, demotes degraded ones
+- View dashboard: `python -m free_search health`
+
+### 5. Result quality optimization
+- Relevance scoring (query-title-snippet token overlap)
+- Enhanced dedup: URL + title similarity (Jaccard threshold)
+- Domain diversity: limits same-domain results (default max 3)
+- Automatic filtering of low-quality results (short titles, missing URLs)
+
+### 6. Source auto-discovery
+- Probes all configured providers for availability
+- Scans candidate search engines (Marginalia, Wiby, public SearXNG instances)
+- Validates response format, latency, and result quality
+- Generates recommendations for new sources to integrate
+- Run: `python -m free_search discover`
+
+### 7. Managed persistence
 - `memory/search-cache/YYYY-MM-DD/*.json`
 - `memory/search-index/search-index.jsonl`
 - `memory/search-reports/YYYY-MM-DD/*.md`
@@ -102,6 +125,18 @@ scripts/remaining --real
 
 # Cleanup cache
 python3 -m free_search gc --cache-days 14
+
+# Provider health dashboard
+python3 -m free_search health
+
+# Discover new search sources
+python3 -m free_search discover
+
+# System diagnostics
+python3 -m free_search doctor
+
+# Setup status & recommendations
+python3 -m free_search setup
 ```
 
 ---
@@ -185,3 +220,7 @@ scripts/remaining --real --compact
 - Use `@dual` / `@deep` only for research tasks
 - `SearXNG` and `YaCy` are `enabled: false` by default (self-hosted only)
 - `MOJEEK_API_KEY` is optional — provider gracefully falls back to HTML scraping
+- Provider health data stored in `memory/provider-health/health.jsonl`
+- Discovery results stored in `memory/provider-discovery/discovery.jsonl`
+- Run `python -m free_search doctor` after setup to verify everything works
+- Run `python -m free_search discover` periodically to find new search sources

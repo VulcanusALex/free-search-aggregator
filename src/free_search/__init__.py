@@ -11,6 +11,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from .discovery import SourceDiscovery
+from .health import HealthTracker
 from .router import SearchRouter, SearchRouterError
 from .task_search import task_search
 from .quota_real import get_real_quota
@@ -61,15 +63,31 @@ def reset_quota(*, config_path: str | None = None, provider: str | None = None) 
     return router.reset_quota(provider=provider)
 
 
+def get_health_status(*, window_hours: int = 72) -> dict[str, Any]:
+    """Return provider health summary."""
+    tracker = HealthTracker()
+    return tracker.get_summary(window_hours=window_hours)
+
+
+def run_discovery(*, config_path: str | None = None) -> dict[str, Any]:
+    """Run full source discovery cycle."""
+    discovery = SourceDiscovery(config_path=config_path)
+    return discovery.run_discovery()
+
+
 __all__ = [
     "search",
     "task_search",
     "get_real_quota",
     "get_quota_status",
     "reset_quota",
+    "get_health_status",
+    "run_discovery",
     "configure_logging",
     "SearchRouter",
     "SearchRouterError",
+    "HealthTracker",
+    "SourceDiscovery",
 ]
 
 
